@@ -71,6 +71,9 @@ func (a *Api) UserFromRequest(r *http.Request) (string, error) {
 	if err := idtoken.Claims(&claims); err != nil {
 		return "", err
 	}
+	if claims.Email == "" {
+		return "", fmt.Errorf("empty email")
+	}
 	if !claims.Verified {
 		return "", fmt.Errorf("email not verified")
 	}
