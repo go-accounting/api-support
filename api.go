@@ -2,58 +2,54 @@ package apisupport
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"net/http"
-	"plugin"
 	"strings"
 
 	oidc "github.com/coreos/go-oidc"
-	yaml "gopkg.in/yaml.v2"
+	"github.com/go-accounting/config"
 )
 
 type Api struct {
+	cfg      config.Config
 	provider *oidc.Provider
 	verifier *oidc.IDTokenVerifier
-	err      error
 }
 
-func NewApi() *Api {
-	return &Api{}
+type Decoder func(v interface{}) error
+
+func New(path string) (*Api, error) {
+	a := &Api{}
+	var err error
+	a.cfg, err = config.New(path)
+	if err != nil {
+		return nil, err
+	}
+	a.provider, err = oidc.NewProvider(context.Background(), a.cfg["OpenId/Provider"].(string))
+	if err != nil {
+		return nil, err
+	}
+	a.verifier = a.provider.Verifier(&oidc.Config{ClientID: a.cfg["OpenId/ClientId"].(string)})
+	return a, nil
 }
 
-func (a *Api) Error() error {
-	return a.err
+func (a *Api) Run(w http.ResponseWriter, f func() (interface{}, error)) {
+	v, err := f()
+	if check(err, w) {
+		return
+	}
+	if v != nil {
+		w.Header().Set("Content-Type", "application/json")
+		check(json.NewEncoder(w).Encode(v), w)
+	}
 }
 
-func (a *Api) SetClientCredentials(provider, clientId string) error {
-	if a.err != nil {
-		return a.err
-	}
-	a.provider, a.err = oidc.NewProvider(context.Background(), provider)
-	if a.err == nil {
-		a.verifier = a.provider.Verifier(&oidc.Config{ClientID: clientId})
-	}
-	return a.err
+func (a *Api) Config() config.Config {
+	return a.cfg
 }
 
-func (a *Api) UnmarshalSettings(path string, v interface{}) error {
-	if a.err != nil {
-		return a.err
-	}
-	var data []byte
-	data, a.err = ioutil.ReadFile(path)
-	if a.err != nil {
-		return a.err
-	}
-	a.err = yaml.Unmarshal(data, v)
-	return a.err
-}
-
-func (a *Api) UserFromRequest(r *http.Request) (string, error) {
-	if a.err != nil {
-		return "", a.err
-	}
+func (a *Api) UserFromRequest(w http.ResponseWriter, r *http.Request) string {
 	var token string
 	tokens, ok := r.Header["Authorization"]
 	if ok && len(tokens) >= 1 {
@@ -61,34 +57,40 @@ func (a *Api) UserFromRequest(r *http.Request) (string, error) {
 		token = strings.TrimPrefix(token, "Bearer ")
 	}
 	idtoken, err := a.verifier.Verify(r.Context(), token)
-	if err != nil {
-		return "", err
+	if check(err, w) {
+		return ""
 	}
 	var claims struct {
 		Email    string `json:"email"`
 		Verified bool   `json:"email_verified"`
 	}
-	if err := idtoken.Claims(&claims); err != nil {
-		return "", err
+	if err := idtoken.Claims(&claims); check(err, w) {
+		return ""
 	}
 	if claims.Email == "" {
-		return "", fmt.Errorf("empty email")
+		check(fmt.Errorf("empty email"), w)
+		return ""
 	}
 	if !claims.Verified {
-		return "", fmt.Errorf("email not verified")
+		check(fmt.Errorf("email not verified"), w)
+		return ""
 	}
-	return claims.Email, nil
+	return claims.Email
 }
 
-func (_ *Api) LoadSymbol(pluginFile, symbolName string) (interface{}, error) {
-	p, err := plugin.Open(pluginFile)
-	if err != nil {
-		return nil, err
+func (a *Api) Encode(w http.ResponseWriter, v interface{}, err error) {
+	if check(err, w) {
+		return
 	}
-	return p.Lookup(symbolName)
+	w.Header().Set("Content-Type", "application/json")
+	check(json.NewEncoder(w).Encode(v), w)
 }
 
-func (_ *Api) Check(err error, w http.ResponseWriter) bool {
+func (a *Api) Decode(r *http.Request, v interface{}) error {
+	return json.NewDecoder(r.Body).Decode(v)
+}
+
+func check(err error, w http.ResponseWriter) bool {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
