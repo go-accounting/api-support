@@ -3,6 +3,7 @@ package apisupport
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -55,6 +56,10 @@ func (a *Api) UserFromRequest(w http.ResponseWriter, r *http.Request) string {
 	if ok && len(tokens) >= 1 {
 		token = tokens[0]
 		token = strings.TrimPrefix(token, "Bearer ")
+	}
+	if token == "" {
+		check(errors.New("token is empty"), w)
+		return ""
 	}
 	idtoken, err := a.verifier.Verify(r.Context(), token)
 	if check(err, w) {
